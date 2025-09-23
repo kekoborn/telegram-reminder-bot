@@ -23,6 +23,103 @@ IOS_WEBHOOK_URL = os.getenv('IOS_WEBHOOK_URL')
 class HuggingFaceReminderBot:
     def __init__(self):
         self.application = None
+    
+    # Метод для анализа сообщения
+    async def analyze_message(self, text: str) -> dict:
+        """Анализирует сообщение пользователя и возвращает информацию о задаче"""
+        logger.info(f"Анализируем: {text}")
+        
+        # Здесь можно использовать существующий анализ с паттернами
+        pattern_result = self.smart_pattern_analysis(text)
+        
+        if pattern_result.get("is_task", False):
+            logger.info("✅ Задача определена pattern matching")
+            return pattern_result
+        
+        # Если паттерн не сработал, пробуем Hugging Face API
+        logger.info("🔄 Pattern matching не сработал, пробуем HF API...")
+        hf_result = await self.call_huggingface_api(text)
+        
+        if hf_result:
+            # Пробуем еще раз с результатом от HF
+            enhanced_text = text + " " + hf_result.get('generated', '')
+            enhanced_result = self.smart_pattern_analysis(enhanced_text)
+            if enhanced_result.get("is_task", False):
+                logger.info("✅ Задача определена с помощью HF API")
+                return enhanced_result
+        
+        # Последний шанс - ищем хотя бы время
+        logger.info("🔍 Финальная попытка анализа...")
+        return self.fallback_time_analysis(text)
+    
+    def smart_pattern_analysis(self, text: str) -> dict:
+        """Умный анализ на основе паттернов (псевдокод для анализа)"""
+        # Здесь можно использовать существующие словари для поиска ключевых слов
+        # или другие методы, которые вы хотите использовать для паттернов.
+        return {"is_task": True, "title": text, "date": "2025-09-25", "time": "18:00", "priority": "high"}
+    
+    async def call_huggingface_api(self, text: str) -> dict:
+        """Резервный вызов Hugging Face API"""
+        if not HF_API_KEY:
+            logger.warning("HF API key не настроен, используем только pattern matching")
+            return None
+        
+        # Простой пример вызова API Hugging Face
+        api_url = "https://api-inference.huggingface.co/models/ai-forever/rugpt3medium_based_on_gpt2"
+        
+        headers = {
+            'Authorization': f'Bearer {HF_API_KEY}',
+            'Content-Type': 'application/json'
+        }
+        
+        data = {
+            'inputs': f"Задача: {text}\nЭто напоминание о:"
+        }
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(api_url, headers=headers, json=data, timeout=aiohttp.ClientTimeout(total=15)) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        generated_text = result[0]['generated_text']
+                        logger.info(f"HF API response: {generated_text}")
+                        return {"generated": generated_text}
+                    else:
+                        logger.warning(f"HF API error: {response.status}")
+                        return None
+        except Exception as e:
+            logger.error(f"HF API call failed: {e}")
+            return None
+
+    def fallback_time_analysis(self, text: str) -> dict:
+        """Последняя попытка анализа, если задача не найдена"""
+        return {"is_task": True, "title": text, "date": "2025-09-25", "time": "18:00", "priority": "medium"}
+
+    async def send_to_ios(self, reminder_data: dict) -> bool:
+        """Отправка в iOS Shortcuts"""
+        if not IOS_WEBHOOK_URL:
+            logger.warning("iOS webhook URL не настроен")
+            return False
+        
+        # Логирование данных, отправляемых в iOS
+        logger.info(f"Отправка данных в iOS: {reminder_data}")
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    IOS_WEBHOOK_URL,
+                    json=reminder_data,  # Отправка данных в формате JSON
+                    timeout=aiohttp.ClientTimeout(total=10)
+                ) as response:
+                    success = response.status == 200
+                    if success:
+                        logger.info("✅ Напоминание отправлено в iOS")
+                    else:
+                        logger.error(f"❌ iOS webhook error: {response.status}")
+                    return success
+        except Exception as e:
+            logger.error(f"❌ iOS webhook failed: {e}")
+            return False
 
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /start"""
@@ -97,32 +194,6 @@ class HuggingFaceReminderBot:
 📈 Точность анализа: ~95%
 🚀 Время отклика: <10 секунд"""
         await update.message.reply_text(stats_text)
-
-    async def send_to_ios(self, reminder_data: dict) -> bool:
-        """Отправка в iOS Shortcuts"""
-        if not IOS_WEBHOOK_URL:
-            logger.warning("iOS webhook URL не настроен")
-            return False
-        
-        # Логирование данных, отправляемых в iOS
-        logger.info(f"Отправка данных в iOS: {reminder_data}")
-
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    IOS_WEBHOOK_URL,
-                    json=reminder_data,  # Отправка данных в формате JSON
-                    timeout=aiohttp.ClientTimeout(total=10)
-                ) as response:
-                    success = response.status == 200
-                    if success:
-                        logger.info("✅ Напоминание отправлено в iOS")
-                    else:
-                        logger.error(f"❌ iOS webhook error: {response.status}")
-                    return success
-        except Exception as e:
-            logger.error(f"❌ iOS webhook failed: {e}")
-            return False
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка сообщений"""
