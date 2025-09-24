@@ -123,9 +123,9 @@ class YandexCalendarBot:
         elif 'сегодня' in text.lower():
             event_date = now
         
-        # Поиск дня недели
+        # Поиск дня недели (включая "в пятницу")
         for day_name, day_num in weekdays.items():
-            if day_name in text.lower():
+            if day_name in text.lower() or f"в {day_name}" in text.lower():
                 days_ahead = day_num - now.weekday()
                 if days_ahead <= 0:  # Если день уже прошел, берем следующую неделю
                     days_ahead += 7
@@ -168,16 +168,47 @@ class YandexCalendarBot:
             'original_text': text
         }
 
-    async def create_yandex_event(self, event_data: dict) -> bool:
-        """Создание события в Яндекс.Календаре через правильный API"""
+    async def test_api_connection(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Тест различных API endpoint'ов"""
+        await update.message.reply_text("Тестирую подключение к Яндекс API...")
+        
+        headers = {
+            'Authorization': f'OAuth {YANDEX_TOKEN}',
+            'Content-Type': 'application/json'
+        }
+        
+        # Различные endpoints для тестирования
+        test_endpoints = [
+            "https://calendar.yandex.ru/api/v1/events",
+            "https://calendar.yandex.ru/api/v2/events", 
+            "https://api.calendar.yandex.ru/api/v1/events",
+            "https://calendar.yandex.net/api/v1/events",
+        ]
+        
+        results = []
+        
+        for endpoint in test_endpoints:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(endpoint, headers=headers) as response:
+                        status = response.status
+                        results.append(f"• {endpoint}: {status}")
+                        if status == 200:
+                            results.append(f"  ✅ Подключение работает!")
+            except Exception as e:
+                results.append(f"• {endpoint}: Ошибка - {str(e)[:50]}")
+        
+        await update.message.reply_text("Результаты тестирования:\n" + "\n".join(results))
+
+    async def create_yandex_event(self, event_data: dict) -> dict:
+        """Создание события в Яндекс.Календаре с подробным логированием"""
         
         event_date = event_data['date']
         event_time = event_data['time']
         calendar_id = event_data['calendar_id']
         
         if not event_date or not event_time:
-            logger.error("Не удалось извлечь дату или время")
-            return False
+            return {"success": False, "error": "Нет даты или времени"}
         
         # Создаем datetime для начала события
         time_parts = event_time.split(':')
@@ -191,20 +222,34 @@ class YandexCalendarBot:
         # Конец события (через 1 час)
         end_datetime = start_datetime + timedelta(hours=1)
         
-        # Пробуем разные форматы для API Яндекса
-        api_endpoints = [
-            f"https://calendar.yandex.ru/api/v1/calendars/{calendar_id}/events",
-            f"https://calendar.yandex.ru/api/v2/events",
+        # Различные форматы payload для разных API
+        payloads = [
+            {
+                'name': event_data['title'],
+                'startTs': start_datetime.isoformat(),
+                'endTs': end_datetime.isoformat(),
+                'layerId': calendar_id
+            },
+            {
+                'title': event_data['title'],
+                'start': start_datetime.isoformat(),
+                'end': end_datetime.isoformat(),
+                'calendar_id': calendar_id
+            },
+            {
+                'summary': event_data['title'],
+                'dtstart': start_datetime.strftime('%Y%m%dT%H%M%S'),
+                'dtend': end_datetime.strftime('%Y%m%dT%H%M%S'),
+                'calendar': calendar_id
+            }
         ]
         
-        # Данные для API Яндекс.Календаря
-        event_payload = {
-            'name': event_data['title'],
-            'startTs': start_datetime.strftime('%Y-%m-%dT%H:%M:%S'),
-            'endTs': end_datetime.strftime('%Y-%m-%dT%H:%M:%S'),
-            'calendarId': calendar_id,
-            'layerId': calendar_id
-        }
+        # Различные endpoints
+        endpoints = [
+            f"https://calendar.yandex.ru/api/v1/events",
+            f"https://calendar.yandex.ru/api/v2/events", 
+            f"https://api.calendar.yandex.ru/api/v1/events"
+        ]
         
         headers = {
             'Authorization': f'OAuth {YANDEX_TOKEN}',
@@ -212,24 +257,37 @@ class YandexCalendarBot:
             'X-Requested-With': 'XMLHttpRequest'
         }
         
-        # Пробуем создать событие через разные endpoints
-        for endpoint in api_endpoints:
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(endpoint, headers=headers, json=event_payload) as response:
-                        if response.status in [200, 201]:
-                            response_data = await response.json()
-                            logger.info(f"Событие успешно создано: {endpoint}")
-                            logger.info(f"Ответ API: {response_data}")
-                            return True
-                        else:
-                            error_text = await response.text()
-                            logger.warning(f"Endpoint {endpoint} вернул {response.status}: {error_text}")
+        # Пробуем все комбинации endpoint + payload
+        for i, endpoint in enumerate(endpoints):
+            for j, payload in enumerate(payloads):
+                try:
+                    logger.info(f"Пробуем endpoint {i+1}/{len(endpoints)}, payload {j+1}/{len(payloads)}")
+                    logger.info(f"URL: {endpoint}")
+                    logger.info(f"Payload: {payload}")
+                    
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(endpoint, headers=headers, json=payload) as response:
+                            status = response.status
+                            response_text = await response.text()
                             
-            except Exception as e:
-                logger.warning(f"Ошибка при обращении к {endpoint}: {e}")
+                            logger.info(f"Ответ: {status} - {response_text[:200]}")
+                            
+                            if status in [200, 201]:
+                                return {"success": True, "response": response_text}
+                            elif status == 401:
+                                return {"success": False, "error": "Проблема с токеном авторизации"}
+                            elif status == 403:
+                                return {"success": False, "error": "Нет прав доступа к календарю"}
+                            elif status == 404:
+                                return {"success": False, "error": "API endpoint не найден"}
+                            else:
+                                continue  # Пробуем следующую комбинацию
+                                
+                except Exception as e:
+                    logger.info(f"Ошибка: {str(e)}")
+                    continue
         
-        return False
+        return {"success": False, "error": "Все API методы не работают"}
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка входящих сообщений"""
@@ -263,9 +321,9 @@ class YandexCalendarBot:
             await processing_msg.edit_text(analysis_text)
             
             # Создаем событие
-            success = await self.create_yandex_event(event_data)
+            result = await self.create_yandex_event(event_data)
             
-            if success:
+            if result["success"]:
                 final_text = f"✅ Событие успешно создано!\n\n"
                 final_text += f"📋 {event_data['title']}\n"
                 final_text += f"📅 {event_data['date'].strftime('%d.%m.%Y')}\n"
@@ -281,7 +339,8 @@ class YandexCalendarBot:
                 error_text += f"📅 {event_data['date'].strftime('%d.%m.%Y')}\n"
                 error_text += f"⏰ {event_data['time']}\n"
                 error_text += f"📂 Календарь: {event_data['category']}\n\n"
-                error_text += "Проверьте токен доступа и права API."
+                error_text += f"Ошибка API: {result['error']}\n"
+                error_text += f"Используйте /test для диагностики API"
                 
                 await processing_msg.edit_text(error_text)
                 
@@ -296,6 +355,7 @@ class YandexCalendarBot:
         self.application.add_handler(CommandHandler("start", self.start_command))
         self.application.add_handler(CommandHandler("categories", self.categories_command))
         self.application.add_handler(CommandHandler("calendars", self.calendars_command))
+        self.application.add_handler(CommandHandler("test", self.test_api_connection))
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
         
         logger.info("Яндекс.Календарь бот запущен!")
