@@ -5,110 +5,109 @@ from datetime import datetime, timedelta
 import json
 import aiohttp
 import re
-from urllib.parse import quote
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # Настройка логирования
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Конфигурация
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-HF_API_KEY = os.getenv('HF_API_KEY')
+YANDEX_TOKEN = os.getenv('YANDEX_TOKEN')
 
-class FullyAutoReminderBot:
+# Mapping категорий на ID календарей
+CALENDAR_IDS = {
+    'звонки с клиентами': '29717783',
+    'методолог': '34555476',
+    'обратная связь методологам': '34547674',
+    'продуктовые задачи': '34547652',
+    'рнп': '34552379',
+    'жизнь': '34996389'
+}
+
+# Ключевые слова для определения категорий
+CATEGORY_KEYWORDS = {
+    'звонки с клиентами': ['звонок', 'звонить', 'созвон', 'разговор', 'клиент', 'переговоры'],
+    'методолог': ['методолог', 'методология', 'метод'],
+    'обратная связь методологам': ['обратная связь', 'фидбек', 'feedback', 'оценка'],
+    'продуктовые задачи': ['продукт', 'фича', 'релиз', 'задача', 'разработка', 'техническ'],
+    'рнп': ['рнп', 'р н п', 'руководитель', 'начальник'],
+    'жизнь': ['личное', 'дом', 'семья', 'отдых', 'врач', 'покупки']
+}
+
+class YandexCalendarBot:
     def __init__(self):
         self.application = None
-        self.reminders_db = []  # Простое хранилище напоминаний
     
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Команда /start"""
-        welcome_text = """Привет! Я полностью автоматический бот для напоминаний!
+        welcome_text = """Привет! Я бот для автоматического добавления событий в Яндекс.Календарь.
 
-Просто пишите задачи - я создаю специальные сообщения которые можно легко копировать в iOS Reminders одним тапом.
+Примеры команд:
+• "Звонок Петров в пятницу 18:00"
+• "Встреча с методологом завтра в 14:00"
+• "Продуктовая задача в понедельник 10:00"
+• "РНП созвон в среду 16:30"
+• "Обратная связь команде во вторник 15:00"
 
-Примеры:
-• "Завтра в 15:00 встреча с врачом"
-• "Через 2 часа принять лекарство"
-• "В понедельник сдать отчет"
+Я автоматически:
+- Найду ближайшую дату
+- Создам событие на 1 час
+- Определю правильный календарь по ключевым словам
 
 Команды:
 /start - это сообщение
-/list - показать все созданные напоминания
-/clear - очистить список"""
+/categories - показать доступные категории
+/calendars - показать все календари с ID"""
         await update.message.reply_text(welcome_text)
 
-    async def list_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показать список всех напоминаний"""
-        if not self.reminders_db:
-            await update.message.reply_text("У вас пока нет созданных напоминаний.")
-            return
-        
-        reminders_text = "Ваши напоминания:\n\n"
-        for i, reminder in enumerate(self.reminders_db[-10:], 1):  # Последние 10
-            date_time = ""
-            if reminder.get('date'):
-                date_time += f" ({reminder['date']}"
-                if reminder.get('time'):
-                    date_time += f" в {reminder['time']}"
-                date_time += ")"
-            
-            reminders_text += f"{i}. {reminder['title']}{date_time}\n"
-        
-        await update.message.reply_text(reminders_text)
+    async def categories_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        categories_text = """Доступные категории и ключевые слова:
 
-    async def clear_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Очистить список напоминаний"""
-        self.reminders_db.clear()
-        await update.message.reply_text("Список напоминаний очищен!")
+1. **Звонки с клиентами** (ID: 29717783)
+   Ключевые слова: звонок, созвон, клиент, переговоры
 
-    def smart_pattern_analysis(self, text: str) -> dict:
-        """Умный анализ паттернами"""
+2. **Методолог** (ID: 34555476)  
+   Ключевые слова: методолог, методология, метод
+
+3. **Обратная связь методологам** (ID: 34547674)
+   Ключевые слова: обратная связь, фидбек, оценка
+
+4. **Продуктовые задачи** (ID: 34547652)
+   Ключевые слова: продукт, фича, релиз, задача, разработка
+
+5. **РНП** (ID: 34552379)
+   Ключевые слова: рнп, руководитель, начальник
+
+6. **Жизнь** (ID: 34996389)
+   Ключевые слова: личное, дом, семья, отдых, врач, покупки
+
+Просто используйте эти слова в сообщении для автоматической категоризации!"""
+        await update.message.reply_text(categories_text, parse_mode='Markdown')
+
+    async def calendars_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        calendars_text = "Настроенные календари:\n\n"
+        for category, calendar_id in CALENDAR_IDS.items():
+            calendars_text += f"• {category.title()}: {calendar_id}\n"
+        await update.message.reply_text(calendars_text)
+
+    def analyze_message(self, text: str) -> dict:
+        """Анализ сообщения для извлечения события"""
         
-        task_keywords = {
-            'meeting': ['встреча', 'собрание', 'совещание'],
-            'medicine': ['лекарство', 'таблетка', 'принять', 'врач'],
-            'shopping': ['купить', 'магазин', 'продукты'],
-            'call': ['позвонить', 'звонок', 'связаться'],
-            'work': ['сдать', 'отчет', 'работа', 'проект'],
-            'personal': ['напомни', 'не забыть', 'важно']
-        }
-        
-        priority_words = {
-            'high': ['срочно', 'важно', 'асап'],
-            'low': ['когда-нибудь', 'не срочно']
-        }
-        
-        # Проверяем ключевые слова
-        found_keywords = []
-        category = 'other'
-        
-        for cat, keywords in task_keywords.items():
+        # Определяем категорию (по умолчанию - звонки с клиентами)
+        category = 'звонки с клиентами'
+        for cat, keywords in CATEGORY_KEYWORDS.items():
             for keyword in keywords:
                 if keyword in text.lower():
-                    found_keywords.append(keyword)
                     category = cat
                     break
-        
-        if not found_keywords:
-            return {"is_task": False, "reason": "Не найдены ключевые слова задач"}
+            if category != 'звонки с клиентами':  # Если нашли категорию, выходим
+                break
         
         # Извлекаем время
         now = datetime.now()
-        date_found = None
-        time_found = None
-        
-        # Относительные даты
-        if 'завтра' in text.lower():
-            date_found = (now + timedelta(days=1)).strftime('%Y-%m-%d')
-        elif 'послезавтра' in text.lower():
-            date_found = (now + timedelta(days=2)).strftime('%Y-%m-%d')
-        elif 'сегодня' in text.lower():
-            date_found = now.strftime('%Y-%m-%d')
+        event_date = None
+        event_time = None
         
         # Дни недели
         weekdays = {
@@ -116,214 +115,190 @@ class FullyAutoReminderBot:
             'пятница': 4, 'суббота': 5, 'воскресенье': 6
         }
         
+        # Относительные даты
+        if 'завтра' in text.lower():
+            event_date = now + timedelta(days=1)
+        elif 'послезавтра' in text.lower():
+            event_date = now + timedelta(days=2)
+        elif 'сегодня' in text.lower():
+            event_date = now
+        
+        # Поиск дня недели
         for day_name, day_num in weekdays.items():
             if day_name in text.lower():
                 days_ahead = day_num - now.weekday()
-                if days_ahead <= 0:
+                if days_ahead <= 0:  # Если день уже прошел, берем следующую неделю
                     days_ahead += 7
-                target_date = now + timedelta(days=days_ahead)
-                date_found = target_date.strftime('%Y-%m-%d')
+                event_date = now + timedelta(days=days_ahead)
                 break
         
-        # Относительное время "через X"
-        through_match = re.search(r'через (\d+) (час|часа|часов|день|дня|дней)', text.lower())
-        if through_match:
-            amount = int(through_match.group(1))
-            unit = through_match.group(2)
-            
-            if 'час' in unit:
-                target_time = now + timedelta(hours=amount)
-                date_found = target_time.strftime('%Y-%m-%d')
-                time_found = target_time.strftime('%H:%M')
-            elif 'день' in unit:
-                target_date = now + timedelta(days=amount)
-                date_found = target_date.strftime('%Y-%m-%d')
-        
-        # Точное время
+        # Извлекаем время
         time_patterns = [
-            r'(\d{1,2}):(\d{2})',
-            r'в (\d{1,2}) (утра|дня|вечера)',
+            r'(\d{1,2}):(\d{2})',  # 18:00
+            r'в (\d{1,2}):(\d{2})',  # в 18:00
+            r'(\d{1,2})\s*(\d{2})'  # 18 00
         ]
         
         for pattern in time_patterns:
-            time_match = re.search(pattern, text.lower())
+            time_match = re.search(pattern, text)
             if time_match:
-                if ':' in time_match.group():
-                    time_found = time_match.group()
-                else:
-                    hour = int(time_match.group(1))
-                    period = time_match.group(2) if len(time_match.groups()) > 1 else None
-                    
-                    if period == 'вечера' and hour < 12:
-                        hour += 12
-                    elif period == 'утра' and hour == 12:
-                        hour = 0
-                        
-                    time_found = f"{hour:02d}:00"
-                break
-        
-        # Время по словам
-        if not time_found:
-            if 'утром' in text.lower():
-                time_found = '09:00'
-            elif 'днем' in text.lower():
-                time_found = '14:00'
-            elif 'вечером' in text.lower():
-                time_found = '18:00'
-        
-        # Приоритет
-        priority = 'medium'
-        for level, words in priority_words.items():
-            for word in words:
-                if word in text.lower():
-                    priority = level
+                hour = int(time_match.group(1))
+                minute = int(time_match.group(2))
+                if 0 <= hour <= 23 and 0 <= minute <= 59:
+                    event_time = f"{hour:02d}:{minute:02d}"
                     break
         
-        if any(word in text.lower() for word in ['сегодня', 'срочно', 'важно']):
-            priority = 'high'
+        # Если время не найдено, ставим время по умолчанию
+        if not event_time and event_date:
+            event_time = "10:00"  # По умолчанию 10:00
         
-        # Генерируем заголовок
+        # Генерируем заголовок события (убираем время и день недели)
         title = text
-        if len(title) > 50:
-            title_clean = re.sub(r'\b(завтра|послезавтра|сегодня|через \d+ \w+|\d{1,2}:\d{2}|в \d{1,2} \w+)\b', '', title.lower())
-            title_clean = re.sub(r'\s+', ' ', title_clean).strip()
-            if len(title_clean) > 50:
-                title = title_clean[:47] + "..."
-            else:
-                title = title_clean.capitalize() if title_clean else text[:50]
+        # Убираем временные выражения
+        title = re.sub(r'\b(в\s+)?(\d{1,2}):(\d{2})\b', '', title)
+        title = re.sub(r'\b(завтра|послезавтра|сегодня|понедельник|вторник|среда|четверг|пятница|суббота|воскресенье)\b', '', title, flags=re.IGNORECASE)
+        title = re.sub(r'\s+', ' ', title).strip()
         
         return {
-            "is_task": True,
-            "title": title,
-            "description": text,
-            "date": date_found,
-            "time": time_found,
-            "priority": priority,
-            "category": category,
-            "keywords_found": found_keywords
+            'title': title,
+            'category': category,
+            'calendar_id': CALENDAR_IDS[category],
+            'date': event_date,
+            'time': event_time,
+            'original_text': text
         }
 
-    def format_reminder_for_ios(self, reminder_data: dict) -> str:
-        """Форматирует напоминание для легкого копирования в iOS"""
+    async def create_yandex_event(self, event_data: dict) -> bool:
+        """Создание события в Яндекс.Календаре через правильный API"""
         
-        title = reminder_data.get('title', '')
-        date = reminder_data.get('date', '')
-        time = reminder_data.get('time', '')
+        event_date = event_data['date']
+        event_time = event_data['time']
+        calendar_id = event_data['calendar_id']
         
-        # Создаем текст для копирования
-        reminder_text = title
+        if not event_date or not event_time:
+            logger.error("Не удалось извлечь дату или время")
+            return False
         
-        if date or time:
-            reminder_text += " ("
-            if date:
-                # Конвертируем дату в читаемый формат
-                try:
-                    date_obj = datetime.strptime(date, '%Y-%m-%d')
-                    readable_date = date_obj.strftime('%d.%m.%Y')
-                    reminder_text += readable_date
-                except:
-                    reminder_text += date
-            
-            if time:
-                if date:
-                    reminder_text += f" в {time}"
-                else:
-                    reminder_text += time
-            
-            reminder_text += ")"
+        # Создаем datetime для начала события
+        time_parts = event_time.split(':')
+        start_datetime = event_date.replace(
+            hour=int(time_parts[0]),
+            minute=int(time_parts[1]),
+            second=0,
+            microsecond=0
+        )
         
-        return reminder_text
-
-    async def create_ios_reminder_message(self, reminder_data: dict, update: Update):
-        """Создает сообщение с автоматическим напоминанием"""
+        # Конец события (через 1 час)
+        end_datetime = start_datetime + timedelta(hours=1)
         
-        # Форматируем для iOS
-        ios_text = self.format_reminder_for_ios(reminder_data)
+        # Пробуем разные форматы для API Яндекса
+        api_endpoints = [
+            f"https://calendar.yandex.ru/api/v1/calendars/{calendar_id}/events",
+            f"https://calendar.yandex.ru/api/v2/events",
+        ]
         
-        # Создаем красивое сообщение
-        message = f"Напоминание создано!\n\n"
-        message += f"Скопируйте текст ниже и вставьте в iOS Reminders:\n\n"
-        message += f"`{ios_text}`\n\n"
-        message += f"Или нажмите и удерживайте текст выше, выберите 'Копировать', затем откройте Напоминания и создайте новое напоминание."
+        # Данные для API Яндекс.Календаря
+        event_payload = {
+            'name': event_data['title'],
+            'startTs': start_datetime.strftime('%Y-%m-%dT%H:%M:%S'),
+            'endTs': end_datetime.strftime('%Y-%m-%dT%H:%M:%S'),
+            'calendarId': calendar_id,
+            'layerId': calendar_id
+        }
         
-        await update.message.reply_text(message, parse_mode='Markdown')
+        headers = {
+            'Authorization': f'OAuth {YANDEX_TOKEN}',
+            'Content-Type': 'application/json',
+            'X-Requested-With': 'XMLHttpRequest'
+        }
         
-        # Отправляем отдельное сообщение только с текстом для удобного копирования
-        await update.message.reply_text(ios_text)
+        # Пробуем создать событие через разные endpoints
+        for endpoint in api_endpoints:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(endpoint, headers=headers, json=event_payload) as response:
+                        if response.status in [200, 201]:
+                            response_data = await response.json()
+                            logger.info(f"Событие успешно создано: {endpoint}")
+                            logger.info(f"Ответ API: {response_data}")
+                            return True
+                        else:
+                            error_text = await response.text()
+                            logger.warning(f"Endpoint {endpoint} вернул {response.status}: {error_text}")
+                            
+            except Exception as e:
+                logger.warning(f"Ошибка при обращении к {endpoint}: {e}")
+        
+        return False
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка сообщений"""
+        """Обработка входящих сообщений"""
         user_message = update.message.text
         user_id = update.effective_user.id
-        user_name = update.effective_user.first_name or "Пользователь"
         
-        logger.info(f"Сообщение от {user_name} ({user_id}): {user_message}")
+        logger.info(f"Получено сообщение от {user_id}: {user_message}")
         
-        processing_msg = await update.message.reply_text("Анализирую и создаю напоминание...")
-        
-        start_time = datetime.now()
+        processing_msg = await update.message.reply_text("Анализирую сообщение и создаю событие...")
         
         try:
-            # Анализ сообщения
-            analysis = self.smart_pattern_analysis(user_message)
-            processing_time = (datetime.now() - start_time).total_seconds()
+            # Анализируем сообщение
+            event_data = self.analyze_message(user_message)
             
-            if not analysis.get("is_task", False):
-                reason = analysis.get("reason", "Не удалось определить как задачу")
+            if not event_data['date']:
                 await processing_msg.edit_text(
-                    f"Это не похоже на задачу\n\n"
-                    f"Причина: {reason}\n\n"
-                    f"Попробуйте включить:\n"
-                    f"• Время: 'завтра в 15:00'\n"
-                    f"• Действие: 'купить', 'встреча', 'напомни'\n"
-                    f"• Конкретику: 'встреча с врачом'"
+                    "Не удалось определить дату.\n"
+                    "Попробуйте указать день: 'завтра', 'в пятницу', 'сегодня'"
                 )
                 return
             
-            # Сохраняем напоминание
-            self.reminders_db.append(analysis)
+            # Показываем что было проанализировано
+            analysis_text = f"Проанализировал ваш запрос:\n\n"
+            analysis_text += f"📋 Событие: {event_data['title']}\n"
+            analysis_text += f"📅 Дата: {event_data['date'].strftime('%d.%m.%Y')}\n"
+            analysis_text += f"⏰ Время: {event_data['time']}\n"
+            analysis_text += f"📂 Календарь: {event_data['category']}\n"
+            analysis_text += f"🔢 ID календаря: {event_data['calendar_id']}\n\n"
+            analysis_text += "Создаю событие..."
             
-            # Эмодзи карта
-            emoji_map = {
-                "high": "🔥", "medium": "⭐", "low": "📝",
-                "meeting": "👥", "medicine": "💊", "shopping": "🛒",
-                "call": "📞", "work": "💼", "other": "📋"
-            }
+            await processing_msg.edit_text(analysis_text)
             
-            category_emoji = emoji_map.get(analysis.get('category', 'other'), '📋')
+            # Создаем событие
+            success = await self.create_yandex_event(event_data)
             
-            # Информационное сообщение
-            info_text = f"✅ Напоминание проанализировано!\n\n"
-            info_text += f"{category_emoji} {analysis['title']}\n"
-            
-            if analysis.get('date'):
-                info_text += f"📅 Дата: {analysis['date']}\n"
-            if analysis.get('time'):
-                info_text += f"⏰ Время: {analysis['time']}\n"
-            
-            info_text += f"⚡ Время обработки: {processing_time:.1f}с\n"
-            info_text += f"💾 Сохранено в базу (всего: {len(self.reminders_db)})"
-            
-            await processing_msg.edit_text(info_text)
-            
-            # Создаем сообщение для iOS
-            await self.create_ios_reminder_message(analysis, update)
-            
+            if success:
+                final_text = f"✅ Событие успешно создано!\n\n"
+                final_text += f"📋 {event_data['title']}\n"
+                final_text += f"📅 {event_data['date'].strftime('%d.%m.%Y')}\n"
+                final_text += f"⏰ {event_data['time']} - {(datetime.strptime(event_data['time'], '%H:%M') + timedelta(hours=1)).strftime('%H:%M')}\n"
+                final_text += f"📂 Календарь: {event_data['category']}\n\n"
+                final_text += "Событие добавлено в ваш Яндекс.Календарь!"
+                
+                await processing_msg.edit_text(final_text)
+            else:
+                error_text = f"❌ Не удалось создать событие в календаре.\n\n"
+                error_text += f"Проанализированные данные:\n"
+                error_text += f"📋 {event_data['title']}\n"
+                error_text += f"📅 {event_data['date'].strftime('%d.%m.%Y')}\n"
+                error_text += f"⏰ {event_data['time']}\n"
+                error_text += f"📂 Календарь: {event_data['category']}\n\n"
+                error_text += "Проверьте токен доступа и права API."
+                
+                await processing_msg.edit_text(error_text)
+                
         except Exception as e:
-            logger.error(f"Ошибка обработки: {e}")
-            await processing_msg.edit_text(f"Произошла ошибка: {str(e)}")
+            logger.error(f"Ошибка обработки сообщения: {e}")
+            await processing_msg.edit_text(f"❌ Произошла ошибка: {str(e)}")
 
     def run(self):
         """Запуск бота"""
         self.application = Application.builder().token(TELEGRAM_TOKEN).build()
         
-        # Регистрируем обработчики
         self.application.add_handler(CommandHandler("start", self.start_command))
-        self.application.add_handler(CommandHandler("list", self.list_command))
-        self.application.add_handler(CommandHandler("clear", self.clear_command))
+        self.application.add_handler(CommandHandler("categories", self.categories_command))
+        self.application.add_handler(CommandHandler("calendars", self.calendars_command))
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
         
-        logger.info("🚀 Fully Auto Reminder Bot запущен!")
+        logger.info("Яндекс.Календарь бот запущен!")
         self.application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
@@ -331,8 +306,9 @@ if __name__ == '__main__':
         logger.error("TELEGRAM_TOKEN не установлен!")
         exit(1)
         
-    logger.info("📱 Используется полностью автоматическое создание напоминаний")
-    logger.info(f"🔑 HF API Key: {'✅' if HF_API_KEY else '❌'}")
-    
-    bot = FullyAutoReminderBot()
+    if not YANDEX_TOKEN:
+        logger.error("YANDEX_TOKEN не установлен!")
+        exit(1)
+        
+    bot = YandexCalendarBot()
     bot.run()
