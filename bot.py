@@ -20,80 +20,51 @@ logger = logging.getLogger(__name__)
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 HF_API_KEY = os.getenv('HF_API_KEY')
 
-class AutoReminderBot:
+class FullyAutoReminderBot:
     def __init__(self):
         self.application = None
+        self.reminders_db = []  # Простое хранилище напоминаний
     
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /start"""
-        welcome_text = """🤖 Привет! Я автоматический бот для создания напоминаний в iOS!
+        welcome_text = """Привет! Я полностью автоматический бот для напоминаний!
 
-💡 Powered by Hugging Face - полностью автоматическое создание!
+Просто пишите задачи - я создаю специальные сообщения которые можно легко копировать в iOS Reminders одним тапом.
 
-Просто напишите задачу, и я создам автоматическую ссылку:
-
-📝 Примеры сообщений:
+Примеры:
 • "Завтра в 15:00 встреча с врачом"
-• "Через 2 часа принять лекарство" 
-• "В понедельник сдать отчет до 18:00"
-• "Купить продукты после работы"
-
-🔗 Нажмите ссылку → автоматически создастся напоминание!
+• "Через 2 часа принять лекарство"
+• "В понедельник сдать отчет"
 
 Команды:
-/start - показать это сообщение
-/help - подробная помощь
-/setup - инструкция по настройке iOS"""
+/start - это сообщение
+/list - показать все созданные напоминания
+/clear - очистить список"""
         await update.message.reply_text(welcome_text)
 
-    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Команда /help"""
-        help_text = """❓ Как работает автоматический бот:
+    async def list_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать список всех напоминаний"""
+        if not self.reminders_db:
+            await update.message.reply_text("У вас пока нет созданных напоминаний.")
+            return
+        
+        reminders_text = "Ваши напоминания:\n\n"
+        for i, reminder in enumerate(self.reminders_db[-10:], 1):  # Последние 10
+            date_time = ""
+            if reminder.get('date'):
+                date_time += f" ({reminder['date']}"
+                if reminder.get('time'):
+                    date_time += f" в {reminder['time']}"
+                date_time += ")"
+            
+            reminders_text += f"{i}. {reminder['title']}{date_time}\n"
+        
+        await update.message.reply_text(reminders_text)
 
-1️⃣ Отправьте сообщение с задачей
-2️⃣ Бот проанализирует и создаст ссылку
-3️⃣ Нажмите на ссылку - откроется iOS Shortcuts
-4️⃣ Напоминание создастся автоматически!
-
-📱 Поддерживаемые форматы:
-• Время: "завтра в 15:00", "через час"
-• Дни недели: "в понедельник", "в пятницу"
-• Даты: "25 декабря", "31.12.2024"
-
-🔧 Что нужно настроить в iOS:
-1. Создать Shortcut "CreateReminder"
-2. Разрешить запуск по ссылкам
-3. Дать доступ к Напоминаниям
-
-/setup - подробная инструкция по настройке"""
-        await update.message.reply_text(help_text)
-
-    async def setup_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Инструкция по настройке"""
-        setup_text = """🔧 Настройка iOS Shortcuts:
-
-📱 Шаг 1: Создайте Shortcut
-1. Откройте "Быстрые команды"
-2. Нажмите "+" → "Добавить действие"
-3. Назовите Shortcut: "CreateReminder"
-
-🔨 Шаг 2: Добавьте действия:
-1. "Получить текст из ввода"
-2. "Получить значение словаря" (ключ: title)
-3. "Получить значение словаря" (ключ: date) 
-4. "Получить значение словаря" (ключ: time)
-5. "Добавить напоминание"
-
-⚙️ Шаг 3: Настройки Shortcut:
-• Включить "Использовать с Siri"
-• Включить "Разрешить общий доступ" 
-• Включить "Принимать текст на входе"
-
-🔑 Шаг 4: Разрешения:
-Настройки → Конфиденциальность → Напоминания → Быстрые команды ✅
-
-После настройки отправьте любое сообщение с задачей!"""
-        await update.message.reply_text(setup_text)
+    async def clear_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Очистить список напоминаний"""
+        self.reminders_db.clear()
+        await update.message.reply_text("Список напоминаний очищен!")
 
     def smart_pattern_analysis(self, text: str) -> dict:
         """Умный анализ паттернами"""
@@ -172,7 +143,6 @@ class AutoReminderBot:
         time_patterns = [
             r'(\d{1,2}):(\d{2})',
             r'в (\d{1,2}) (утра|дня|вечера)',
-            r'(\d{1,2}) часов'
         ]
         
         for pattern in time_patterns:
@@ -233,50 +203,53 @@ class AutoReminderBot:
             "keywords_found": found_keywords
         }
 
-    def create_ios_link(self, reminder_data: dict) -> str:
-        """Создание ссылки для автоматического запуска iOS Shortcuts"""
+    def format_reminder_for_ios(self, reminder_data: dict) -> str:
+        """Форматирует напоминание для легкого копирования в iOS"""
         
-        # Подготавливаем данные
-        json_data = {
-            "title": reminder_data.get("title", ""),
-            "date": reminder_data.get("date", ""),
-            "time": reminder_data.get("time", ""),
-            "priority": reminder_data.get("priority", "medium"),
-            "category": reminder_data.get("category", "other")
-        }
+        title = reminder_data.get('title', '')
+        date = reminder_data.get('date', '')
+        time = reminder_data.get('time', '')
         
-        # Конвертируем в JSON строку
-        json_string = json.dumps(json_data, ensure_ascii=False)
+        # Создаем текст для копирования
+        reminder_text = title
         
-        # Кодируем для URL
-        encoded_json = quote(json_string)
+        if date or time:
+            reminder_text += " ("
+            if date:
+                # Конвертируем дату в читаемый формат
+                try:
+                    date_obj = datetime.strptime(date, '%Y-%m-%d')
+                    readable_date = date_obj.strftime('%d.%m.%Y')
+                    reminder_text += readable_date
+                except:
+                    reminder_text += date
+            
+            if time:
+                if date:
+                    reminder_text += f" в {time}"
+                else:
+                    reminder_text += time
+            
+            reminder_text += ")"
         
-        # Создаем ссылку iOS Shortcuts
-        ios_url = f"shortcuts://run-shortcut?name=CreateReminder&input=text&text={encoded_json}"
-        
-        return ios_url
+        return reminder_text
 
-    def create_reminder_url(self, title: str, date: str = "", time: str = "") -> str:
-        """Альтернативная ссылка через x-apple-reminder"""
+    async def create_ios_reminder_message(self, reminder_data: dict, update: Update):
+        """Создает сообщение с автоматическим напоминанием"""
         
-        # Базовая ссылка напоминаний iOS
-        reminder_url = "x-apple-reminder://add"
-        params = []
+        # Форматируем для iOS
+        ios_text = self.format_reminder_for_ios(reminder_data)
         
-        if title:
-            params.append(f"title={quote(title)}")
+        # Создаем красивое сообщение
+        message = f"Напоминание создано!\n\n"
+        message += f"Скопируйте текст ниже и вставьте в iOS Reminders:\n\n"
+        message += f"`{ios_text}`\n\n"
+        message += f"Или нажмите и удерживайте текст выше, выберите 'Копировать', затем откройте Напоминания и создайте новое напоминание."
         
-        if date and time:
-            # Объединяем дату и время
-            datetime_str = f"{date} {time}"
-            params.append(f"dueDate={quote(datetime_str)}")
-        elif date:
-            params.append(f"dueDate={quote(date)}")
+        await update.message.reply_text(message, parse_mode='Markdown')
         
-        if params:
-            reminder_url += "?" + "&".join(params)
-        
-        return reminder_url
+        # Отправляем отдельное сообщение только с текстом для удобного копирования
+        await update.message.reply_text(ios_text)
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка сообщений"""
@@ -284,9 +257,9 @@ class AutoReminderBot:
         user_id = update.effective_user.id
         user_name = update.effective_user.first_name or "Пользователь"
         
-        logger.info(f"📩 Сообщение от {user_name} ({user_id}): {user_message}")
+        logger.info(f"Сообщение от {user_name} ({user_id}): {user_message}")
         
-        processing_msg = await update.message.reply_text("🔍 Анализирую и создаю автоматическую ссылку...")
+        processing_msg = await update.message.reply_text("Анализирую и создаю напоминание...")
         
         start_time = datetime.now()
         
@@ -298,23 +271,17 @@ class AutoReminderBot:
             if not analysis.get("is_task", False):
                 reason = analysis.get("reason", "Не удалось определить как задачу")
                 await processing_msg.edit_text(
-                    f"🤔 Это не похоже на задачу\n\n"
+                    f"Это не похоже на задачу\n\n"
                     f"Причина: {reason}\n\n"
-                    f"💡 Попробуйте включить:\n"
+                    f"Попробуйте включить:\n"
                     f"• Время: 'завтра в 15:00'\n"
                     f"• Действие: 'купить', 'встреча', 'напомни'\n"
-                    f"• Конкретику: 'встреча с врачом'\n\n"
-                    f"⚡ Время анализа: {processing_time:.1f}с"
+                    f"• Конкретику: 'встреча с врачом'"
                 )
                 return
             
-            # Создаем iOS ссылки
-            shortcuts_url = self.create_ios_link(analysis)
-            reminder_url = self.create_reminder_url(
-                analysis.get("title", ""),
-                analysis.get("date", ""),
-                analysis.get("time", "")
-            )
+            # Сохраняем напоминание
+            self.reminders_db.append(analysis)
             
             # Эмодзи карта
             emoji_map = {
@@ -323,50 +290,28 @@ class AutoReminderBot:
                 "call": "📞", "work": "💼", "other": "📋"
             }
             
-            priority_emoji = emoji_map.get(analysis.get('priority', 'medium'), '⭐')
             category_emoji = emoji_map.get(analysis.get('category', 'other'), '📋')
             
-            # Формируем ответ с автоматическими ссылками
-            success_text = f"✅ Автоматические ссылки готовы!\n\n"
-            success_text += f"{category_emoji} **{analysis['title']}**\n"
+            # Информационное сообщение
+            info_text = f"✅ Напоминание проанализировано!\n\n"
+            info_text += f"{category_emoji} {analysis['title']}\n"
             
             if analysis.get('date'):
-                success_text += f"📅 Дата: {analysis['date']}\n"
+                info_text += f"📅 Дата: {analysis['date']}\n"
             if analysis.get('time'):
-                success_text += f"⏰ Время: {analysis['time']}\n"
-                
-            success_text += f"{priority_emoji} Приоритет: {analysis['priority']}\n"
+                info_text += f"⏰ Время: {analysis['time']}\n"
             
-            if 'keywords_found' in analysis:
-                success_text += f"🔍 Найдены: {', '.join(analysis['keywords_found'])}\n"
+            info_text += f"⚡ Время обработки: {processing_time:.1f}с\n"
+            info_text += f"💾 Сохранено в базу (всего: {len(self.reminders_db)})"
             
-            success_text += f"⚡ Время обработки: {processing_time:.1f}с\n\n"
+            await processing_msg.edit_text(info_text)
             
-            success_text += f"🔗 **Нажмите для создания напоминания:**"
-            
-            # Отправляем основное сообщение
-            await processing_msg.edit_text(success_text, parse_mode='Markdown')
-            
-            # Отправляем ссылки отдельными сообщениями
-            await update.message.reply_text(
-                f"📱 **Через Shortcuts:**\n{shortcuts_url}",
-                parse_mode='Markdown',
-                disable_web_page_preview=True
-            )
-            
-            await update.message.reply_text(
-                f"🍎 **Прямо в Напоминания:**\n{reminder_url}",
-                parse_mode='Markdown', 
-                disable_web_page_preview=True
-            )
+            # Создаем сообщение для iOS
+            await self.create_ios_reminder_message(analysis, update)
             
         except Exception as e:
-            logger.error(f"❌ Ошибка обработки: {e}")
-            await processing_msg.edit_text(
-                f"❌ Произошла ошибка\n\n"
-                f"Подробности: {str(e)}\n\n"
-                f"🔄 Попробуйте еще раз или обратитесь к разработчику"
-            )
+            logger.error(f"Ошибка обработки: {e}")
+            await processing_msg.edit_text(f"Произошла ошибка: {str(e)}")
 
     def run(self):
         """Запуск бота"""
@@ -374,20 +319,20 @@ class AutoReminderBot:
         
         # Регистрируем обработчики
         self.application.add_handler(CommandHandler("start", self.start_command))
-        self.application.add_handler(CommandHandler("help", self.help_command))
-        self.application.add_handler(CommandHandler("setup", self.setup_command))
+        self.application.add_handler(CommandHandler("list", self.list_command))
+        self.application.add_handler(CommandHandler("clear", self.clear_command))
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
         
-        logger.info("🚀 Auto iOS Reminder Bot запущен!")
+        logger.info("🚀 Fully Auto Reminder Bot запущен!")
         self.application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
     if not TELEGRAM_TOKEN:
-        logger.error("❌ TELEGRAM_TOKEN не установлен!")
+        logger.error("TELEGRAM_TOKEN не установлен!")
         exit(1)
         
-    logger.info("🍎 Используется автоматическое создание через iOS URL Scheme")
+    logger.info("📱 Используется полностью автоматическое создание напоминаний")
     logger.info(f"🔑 HF API Key: {'✅' if HF_API_KEY else '❌'}")
     
-    bot = AutoReminderBot()
+    bot = FullyAutoReminderBot()
     bot.run()
