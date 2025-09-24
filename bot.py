@@ -342,12 +342,23 @@ class AutoReminderBot:
             
             success_text += f"⚡ Время обработки: {processing_time:.1f}с\n\n"
             
-            success_text += f"🔗 **Нажмите для создания напоминания:**\n"
-            success_text += f"[📱 Через Shortcuts]({shortcuts_url})\n"
-            success_text += f"[🍎 Прямо в Напоминания]({reminder_url})\n\n"
-            success_text += f"🤗 Powered by Hugging Face"
+            success_text += f"🔗 **Нажмите для создания напоминания:**"
             
-            await processing_msg.edit_text(success_text, parse_mode='Markdown', disable_web_page_preview=True)
+            # Отправляем основное сообщение
+            await processing_msg.edit_text(success_text, parse_mode='Markdown')
+            
+            # Отправляем ссылки отдельными сообщениями
+            await update.message.reply_text(
+                f"📱 **Через Shortcuts:**\n{shortcuts_url}",
+                parse_mode='Markdown',
+                disable_web_page_preview=True
+            )
+            
+            await update.message.reply_text(
+                f"🍎 **Прямо в Напоминания:**\n{reminder_url}",
+                parse_mode='Markdown', 
+                disable_web_page_preview=True
+            )
             
         except Exception as e:
             logger.error(f"❌ Ошибка обработки: {e}")
