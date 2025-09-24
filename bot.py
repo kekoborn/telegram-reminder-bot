@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 import json
 import aiohttp
 import re
+from urllib.parse import quote
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
@@ -17,183 +18,265 @@ logger = logging.getLogger(__name__)
 
 # Конфигурация
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-HF_API_KEY = os.getenv('HF_API_KEY')  # Hugging Face API token
-IOS_WEBHOOK_URL = os.getenv('IOS_WEBHOOK_URL')
+HF_API_KEY = os.getenv('HF_API_KEY')
 
-class HuggingFaceReminderBot:
+class AutoReminderBot:
     def __init__(self):
         self.application = None
     
-    # Метод для анализа сообщения
-    async def analyze_message(self, text: str) -> dict:
-        """Анализирует сообщение пользователя и возвращает информацию о задаче"""
-        logger.info(f"Анализируем: {text}")
-        
-        # Здесь можно использовать существующий анализ с паттернами
-        pattern_result = self.smart_pattern_analysis(text)
-        
-        if pattern_result.get("is_task", False):
-            logger.info("✅ Задача определена pattern matching")
-            return pattern_result
-        
-        # Если паттерн не сработал, пробуем Hugging Face API
-        logger.info("🔄 Pattern matching не сработал, пробуем HF API...")
-        hf_result = await self.call_huggingface_api(text)
-        
-        if hf_result:
-            # Пробуем еще раз с результатом от HF
-            enhanced_text = text + " " + hf_result.get('generated', '')
-            enhanced_result = self.smart_pattern_analysis(enhanced_text)
-            if enhanced_result.get("is_task", False):
-                logger.info("✅ Задача определена с помощью HF API")
-                return enhanced_result
-        
-        # Последний шанс - ищем хотя бы время
-        logger.info("🔍 Финальная попытка анализа...")
-        return self.fallback_time_analysis(text)
-    
-    def smart_pattern_analysis(self, text: str) -> dict:
-        """Умный анализ на основе паттернов (псевдокод для анализа)"""
-        # Здесь можно использовать существующие словари для поиска ключевых слов
-        # или другие методы, которые вы хотите использовать для паттернов.
-        return {"is_task": True, "title": text, "date": "2025-09-25", "time": "18:00", "priority": "high"}
-    
-    async def call_huggingface_api(self, text: str) -> dict:
-        """Резервный вызов Hugging Face API"""
-        if not HF_API_KEY:
-            logger.warning("HF API key не настроен, используем только pattern matching")
-            return None
-        
-        # Простой пример вызова API Hugging Face
-        api_url = "https://api-inference.huggingface.co/models/ai-forever/rugpt3medium_based_on_gpt2"
-        
-        headers = {
-            'Authorization': f'Bearer {HF_API_KEY}',
-            'Content-Type': 'application/json'
-        }
-        
-        data = {
-            'inputs': f"Задача: {text}\nЭто напоминание о:"
-        }
-        
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(api_url, headers=headers, json=data, timeout=aiohttp.ClientTimeout(total=15)) as response:
-                    if response.status == 200:
-                        result = await response.json()
-                        generated_text = result[0]['generated_text']
-                        logger.info(f"HF API response: {generated_text}")
-                        return {"generated": generated_text}
-                    else:
-                        logger.warning(f"HF API error: {response.status}")
-                        return None
-        except Exception as e:
-            logger.error(f"HF API call failed: {e}")
-            return None
-
-    def fallback_time_analysis(self, text: str) -> dict:
-        """Последняя попытка анализа, если задача не найдена"""
-        return {"is_task": True, "title": text, "date": "2025-09-25", "time": "18:00", "priority": "medium"}
-
-    async def send_to_ios(self, reminder_data: dict) -> bool:
-        """Отправка в iOS Shortcuts"""
-        if not IOS_WEBHOOK_URL:
-            logger.warning("iOS webhook URL не настроен")
-            return False
-        
-        # Логирование данных, отправляемых в iOS
-        logger.info(f"Отправка данных в iOS: {reminder_data}")
-
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    IOS_WEBHOOK_URL,
-                    json=reminder_data,  # Отправка данных в формате JSON
-                    timeout=aiohttp.ClientTimeout(total=10)
-                ) as response:
-                    success = response.status == 200
-                    if success:
-                        logger.info("✅ Напоминание отправлено в iOS")
-                    else:
-                        logger.error(f"❌ iOS webhook error: {response.status}")
-                    return success
-        except Exception as e:
-            logger.error(f"❌ iOS webhook failed: {e}")
-            return False
-
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /start"""
-        welcome_text = """🤖 Привет! Я умный бот для создания напоминаний в iOS!
+        welcome_text = """🤖 Привет! Я автоматический бот для создания напоминаний в iOS!
 
-💡 Powered by Hugging Face - 100% бесплатный AI!
+💡 Powered by Hugging Face - полностью автоматическое создание!
 
-Просто напишите мне задачу, и я создам напоминание:
+Просто напишите задачу, и я создам автоматическую ссылку:
 
 📝 Примеры сообщений:
 • "Завтра в 15:00 встреча с врачом"
 • "Через 2 часа принять лекарство" 
 • "В понедельник сдать отчет до 18:00"
 • "Купить продукты после работы"
-• "Позвонить маме в субботу утром"
+
+🔗 Нажмите ссылку → автоматически создастся напоминание!
 
 Команды:
 /start - показать это сообщение
 /help - подробная помощь
-/stats - статистика бота
-
-🆓 Hugging Face предоставляет бесплатный AI для всех!"""
+/setup - инструкция по настройке iOS"""
         await update.message.reply_text(welcome_text)
 
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /help"""
-        help_text = """❓ Как пользоваться ботом:
+        help_text = """❓ Как работает автоматический бот:
 
-1️⃣ Отправьте сообщение с описанием задачи
-2️⃣ AI проанализирует текст и найдет:
-   • Ключевые слова задач
-   • Дату и время
-   • Тип задачи
-   • Приоритет
+1️⃣ Отправьте сообщение с задачей
+2️⃣ Бот проанализирует и создаст ссылку
+3️⃣ Нажмите на ссылку - откроется iOS Shortcuts
+4️⃣ Напоминание создастся автоматически!
 
-3️⃣ Напоминание создастся в iOS Reminders
+📱 Поддерживаемые форматы:
+• Время: "завтра в 15:00", "через час"
+• Дни недели: "в понедельник", "в пятницу"
+• Даты: "25 декабря", "31.12.2024"
 
-🎯 Форматы времени:
-• "завтра", "послезавтра", "сегодня"
-• "через час", "через 2 дня"
-• "в понедельник", "во вторник"
-• "15:00", "в 9 утра", "вечером"
-• конкретные даты: "25 декабря"
+🔧 Что нужно настроить в iOS:
+1. Создать Shortcut "CreateReminder"
+2. Разрешить запуск по ссылкам
+3. Дать доступ к Напоминаниям
 
-🔍 Ключевые слова для задач:
-• напомни, встреча, сдать, купить
-• позвонить, принять, лекарство, врач
-• дело, задача, работа, учеба
-
-🆓 Преимущества Hugging Face:
-• Полностью бесплатно навсегда
-• Без ограничений по запросам
-• Доступно во всех странах"""
+/setup - подробная инструкция по настройке"""
         await update.message.reply_text(help_text)
 
-    async def stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Статистика бота"""
-        stats_text = """📊 Статистика бота:
+    async def setup_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Инструкция по настройке"""
+        setup_text = """🔧 Настройка iOS Shortcuts:
 
-🤖 AI Модель: Smart Pattern Analysis + Hugging Face
-⚡ Скорость: ~1-5 секунд на запрос
-💰 Стоимость: Полностью бесплатно
-🌍 Доступность: 24/7
+📱 Шаг 1: Создайте Shortcut
+1. Откройте "Быстрые команды"
+2. Нажмите "+" → "Добавить действие"
+3. Назовите Shortcut: "CreateReminder"
 
-🔧 Возможности:
-✅ Анализ текста на русском языке
-✅ Извлечение дат и времени
-✅ Определение приоритетов
-✅ Создание напоминаний iOS
-✅ Обработка относительного времени
+🔨 Шаг 2: Добавьте действия:
+1. "Получить текст из ввода"
+2. "Получить значение словаря" (ключ: title)
+3. "Получить значение словаря" (ключ: date) 
+4. "Получить значение словаря" (ключ: time)
+5. "Добавить напоминание"
 
-📈 Точность анализа: ~95%
-🚀 Время отклика: <10 секунд"""
-        await update.message.reply_text(stats_text)
+⚙️ Шаг 3: Настройки Shortcut:
+• Включить "Использовать с Siri"
+• Включить "Разрешить общий доступ" 
+• Включить "Принимать текст на входе"
+
+🔑 Шаг 4: Разрешения:
+Настройки → Конфиденциальность → Напоминания → Быстрые команды ✅
+
+После настройки отправьте любое сообщение с задачей!"""
+        await update.message.reply_text(setup_text)
+
+    def smart_pattern_analysis(self, text: str) -> dict:
+        """Умный анализ паттернами"""
+        
+        task_keywords = {
+            'meeting': ['встреча', 'собрание', 'совещание'],
+            'medicine': ['лекарство', 'таблетка', 'принять', 'врач'],
+            'shopping': ['купить', 'магазин', 'продукты'],
+            'call': ['позвонить', 'звонок', 'связаться'],
+            'work': ['сдать', 'отчет', 'работа', 'проект'],
+            'personal': ['напомни', 'не забыть', 'важно']
+        }
+        
+        priority_words = {
+            'high': ['срочно', 'важно', 'асап'],
+            'low': ['когда-нибудь', 'не срочно']
+        }
+        
+        # Проверяем ключевые слова
+        found_keywords = []
+        category = 'other'
+        
+        for cat, keywords in task_keywords.items():
+            for keyword in keywords:
+                if keyword in text.lower():
+                    found_keywords.append(keyword)
+                    category = cat
+                    break
+        
+        if not found_keywords:
+            return {"is_task": False, "reason": "Не найдены ключевые слова задач"}
+        
+        # Извлекаем время
+        now = datetime.now()
+        date_found = None
+        time_found = None
+        
+        # Относительные даты
+        if 'завтра' in text.lower():
+            date_found = (now + timedelta(days=1)).strftime('%Y-%m-%d')
+        elif 'послезавтра' in text.lower():
+            date_found = (now + timedelta(days=2)).strftime('%Y-%m-%d')
+        elif 'сегодня' in text.lower():
+            date_found = now.strftime('%Y-%m-%d')
+        
+        # Дни недели
+        weekdays = {
+            'понедельник': 0, 'вторник': 1, 'среда': 2, 'четверг': 3,
+            'пятница': 4, 'суббота': 5, 'воскресенье': 6
+        }
+        
+        for day_name, day_num in weekdays.items():
+            if day_name in text.lower():
+                days_ahead = day_num - now.weekday()
+                if days_ahead <= 0:
+                    days_ahead += 7
+                target_date = now + timedelta(days=days_ahead)
+                date_found = target_date.strftime('%Y-%m-%d')
+                break
+        
+        # Относительное время "через X"
+        through_match = re.search(r'через (\d+) (час|часа|часов|день|дня|дней)', text.lower())
+        if through_match:
+            amount = int(through_match.group(1))
+            unit = through_match.group(2)
+            
+            if 'час' in unit:
+                target_time = now + timedelta(hours=amount)
+                date_found = target_time.strftime('%Y-%m-%d')
+                time_found = target_time.strftime('%H:%M')
+            elif 'день' in unit:
+                target_date = now + timedelta(days=amount)
+                date_found = target_date.strftime('%Y-%m-%d')
+        
+        # Точное время
+        time_patterns = [
+            r'(\d{1,2}):(\d{2})',
+            r'в (\d{1,2}) (утра|дня|вечера)',
+            r'(\d{1,2}) часов'
+        ]
+        
+        for pattern in time_patterns:
+            time_match = re.search(pattern, text.lower())
+            if time_match:
+                if ':' in time_match.group():
+                    time_found = time_match.group()
+                else:
+                    hour = int(time_match.group(1))
+                    period = time_match.group(2) if len(time_match.groups()) > 1 else None
+                    
+                    if period == 'вечера' and hour < 12:
+                        hour += 12
+                    elif period == 'утра' and hour == 12:
+                        hour = 0
+                        
+                    time_found = f"{hour:02d}:00"
+                break
+        
+        # Время по словам
+        if not time_found:
+            if 'утром' in text.lower():
+                time_found = '09:00'
+            elif 'днем' in text.lower():
+                time_found = '14:00'
+            elif 'вечером' in text.lower():
+                time_found = '18:00'
+        
+        # Приоритет
+        priority = 'medium'
+        for level, words in priority_words.items():
+            for word in words:
+                if word in text.lower():
+                    priority = level
+                    break
+        
+        if any(word in text.lower() for word in ['сегодня', 'срочно', 'важно']):
+            priority = 'high'
+        
+        # Генерируем заголовок
+        title = text
+        if len(title) > 50:
+            title_clean = re.sub(r'\b(завтра|послезавтра|сегодня|через \d+ \w+|\d{1,2}:\d{2}|в \d{1,2} \w+)\b', '', title.lower())
+            title_clean = re.sub(r'\s+', ' ', title_clean).strip()
+            if len(title_clean) > 50:
+                title = title_clean[:47] + "..."
+            else:
+                title = title_clean.capitalize() if title_clean else text[:50]
+        
+        return {
+            "is_task": True,
+            "title": title,
+            "description": text,
+            "date": date_found,
+            "time": time_found,
+            "priority": priority,
+            "category": category,
+            "keywords_found": found_keywords
+        }
+
+    def create_ios_link(self, reminder_data: dict) -> str:
+        """Создание ссылки для автоматического запуска iOS Shortcuts"""
+        
+        # Подготавливаем данные
+        json_data = {
+            "title": reminder_data.get("title", ""),
+            "date": reminder_data.get("date", ""),
+            "time": reminder_data.get("time", ""),
+            "priority": reminder_data.get("priority", "medium"),
+            "category": reminder_data.get("category", "other")
+        }
+        
+        # Конвертируем в JSON строку
+        json_string = json.dumps(json_data, ensure_ascii=False)
+        
+        # Кодируем для URL
+        encoded_json = quote(json_string)
+        
+        # Создаем ссылку iOS Shortcuts
+        ios_url = f"shortcuts://run-shortcut?name=CreateReminder&input=text&text={encoded_json}"
+        
+        return ios_url
+
+    def create_reminder_url(self, title: str, date: str = "", time: str = "") -> str:
+        """Альтернативная ссылка через x-apple-reminder"""
+        
+        # Базовая ссылка напоминаний iOS
+        reminder_url = "x-apple-reminder://add"
+        params = []
+        
+        if title:
+            params.append(f"title={quote(title)}")
+        
+        if date and time:
+            # Объединяем дату и время
+            datetime_str = f"{date} {time}"
+            params.append(f"dueDate={quote(datetime_str)}")
+        elif date:
+            params.append(f"dueDate={quote(date)}")
+        
+        if params:
+            reminder_url += "?" + "&".join(params)
+        
+        return reminder_url
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка сообщений"""
@@ -203,15 +286,13 @@ class HuggingFaceReminderBot:
         
         logger.info(f"📩 Сообщение от {user_name} ({user_id}): {user_message}")
         
-        # Показываем процесс
-        processing_msg = await update.message.reply_text("🔍 Анализирую сообщение...")
+        processing_msg = await update.message.reply_text("🔍 Анализирую и создаю автоматическую ссылку...")
         
         start_time = datetime.now()
         
         try:
             # Анализ сообщения
-            analysis = await self.analyze_message(user_message)
-            
+            analysis = self.smart_pattern_analysis(user_message)
             processing_time = (datetime.now() - start_time).total_seconds()
             
             if not analysis.get("is_task", False):
@@ -227,63 +308,46 @@ class HuggingFaceReminderBot:
                 )
                 return
             
-            # Подготавливаем данные для iOS
-            ios_data = {
-                "title": analysis.get("title", user_message),
-                "notes": analysis.get("description", ""),
-                "date": analysis.get("date"),
-                "time": analysis.get("time"),
-                "priority": analysis.get("priority", "medium"),
-                "category": analysis.get("category", "other")
-            }
+            # Создаем iOS ссылки
+            shortcuts_url = self.create_ios_link(analysis)
+            reminder_url = self.create_reminder_url(
+                analysis.get("title", ""),
+                analysis.get("date", ""),
+                analysis.get("time", "")
+            )
             
-            # Логирование перед отправкой в iOS
-            logger.info(f"Отправка данных в iOS: {ios_data}")
-            
-            # Отправляем в iOS
-            await processing_msg.edit_text("📱 Создаю напоминание в iOS...")
-            ios_success = await self.send_to_ios(ios_data)
-            
-            # Формируем ответ
+            # Эмодзи карта
             emoji_map = {
                 "high": "🔥", "medium": "⭐", "low": "📝",
                 "meeting": "👥", "medicine": "💊", "shopping": "🛒",
                 "call": "📞", "work": "💼", "other": "📋"
             }
             
-            priority_emoji = emoji_map.get(ios_data['priority'], '⭐')
-            category_emoji = emoji_map.get(ios_data['category'], '📋')
+            priority_emoji = emoji_map.get(analysis.get('priority', 'medium'), '⭐')
+            category_emoji = emoji_map.get(analysis.get('category', 'other'), '📋')
             
-            if ios_success:
-                success_text = f"✅ Напоминание создано!\n\n"
-                success_text += f"{category_emoji} {ios_data['title']}\n"
+            # Формируем ответ с автоматическими ссылками
+            success_text = f"✅ Автоматические ссылки готовы!\n\n"
+            success_text += f"{category_emoji} **{analysis['title']}**\n"
+            
+            if analysis.get('date'):
+                success_text += f"📅 Дата: {analysis['date']}\n"
+            if analysis.get('time'):
+                success_text += f"⏰ Время: {analysis['time']}\n"
                 
-                if ios_data['date']:
-                    success_text += f"📅 Дата: {ios_data['date']}\n"
-                if ios_data['time']:
-                    success_text += f"⏰ Время: {ios_data['time']}\n"
-                    
-                success_text += f"{priority_emoji} Приоритет: {ios_data['priority']}\n"
-                
-                # Показываем найденные ключевые слова
-                if 'keywords_found' in analysis:
-                    success_text += f"🔍 Найдены: {', '.join(analysis['keywords_found'])}\n"
-                
-                success_text += f"⚡ Время обработки: {processing_time:.1f}с\n"
-                success_text += f"🤗 Powered by Hugging Face"
-                
-                await processing_msg.edit_text(success_text)
-            else:
-                await processing_msg.edit_text(
-                    f"⚠️ Задача проанализирована, но не удалось создать напоминание в iOS\n\n"
-                    f"📝 Извлеченная информация:\n"
-                    f"• Задача: {ios_data['title']}\n" +
-                    (f"• Дата: {ios_data['date']}\n" if ios_data['date'] else "") +
-                    (f"• Время: {ios_data['time']}\n" if ios_data['time'] else "") +
-                    f"• Приоритет: {ios_data['priority']}\n\n"
-                    f"🔧 Проверьте настройки iOS Shortcuts\n"
-                    f"⚡ Время анализа: {processing_time:.1f}с"
-                )
+            success_text += f"{priority_emoji} Приоритет: {analysis['priority']}\n"
+            
+            if 'keywords_found' in analysis:
+                success_text += f"🔍 Найдены: {', '.join(analysis['keywords_found'])}\n"
+            
+            success_text += f"⚡ Время обработки: {processing_time:.1f}с\n\n"
+            
+            success_text += f"🔗 **Нажмите для создания напоминания:**\n"
+            success_text += f"[📱 Через Shortcuts]({shortcuts_url})\n"
+            success_text += f"[🍎 Прямо в Напоминания]({reminder_url})\n\n"
+            success_text += f"🤗 Powered by Hugging Face"
+            
+            await processing_msg.edit_text(success_text, parse_mode='Markdown', disable_web_page_preview=True)
             
         except Exception as e:
             logger.error(f"❌ Ошибка обработки: {e}")
@@ -300,22 +364,19 @@ class HuggingFaceReminderBot:
         # Регистрируем обработчики
         self.application.add_handler(CommandHandler("start", self.start_command))
         self.application.add_handler(CommandHandler("help", self.help_command))
-        self.application.add_handler(CommandHandler("stats", self.stats_command))
+        self.application.add_handler(CommandHandler("setup", self.setup_command))
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
         
-        logger.info("🚀 Hugging Face Reminder Bot запущен!")
+        logger.info("🚀 Auto iOS Reminder Bot запущен!")
         self.application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
-    # Проверяем переменные окружения
     if not TELEGRAM_TOKEN:
         logger.error("❌ TELEGRAM_TOKEN не установлен!")
         exit(1)
         
-    logger.info("🤗 Используется Hugging Face + Smart Pattern Analysis")
-    logger.info(f"🔑 HF API Key: {'✅' if HF_API_KEY else '❌ (будет работать без API)'}")
-    logger.info(f"📱 iOS Integration: {'✅' if IOS_WEBHOOK_URL else '❌'}")
+    logger.info("🍎 Используется автоматическое создание через iOS URL Scheme")
+    logger.info(f"🔑 HF API Key: {'✅' if HF_API_KEY else '❌'}")
     
-    # Запускаем бота
-    bot = HuggingFaceReminderBot()
+    bot = AutoReminderBot()
     bot.run()
